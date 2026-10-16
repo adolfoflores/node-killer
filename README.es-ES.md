@@ -64,7 +64,6 @@ Los artefactos se guardan en `dist/`.
 - Los contenedores (Docker) suelen aparecer como `docker-proxy`, por lo que los procesos de Node subyacentes pueden no ser visibles.
 
 ## 📸 Hoja de ruta
-- [ ] Modo de escaneo alternativo para procesos de Node que no están escuchando en sockets.
 - [ ] Soporte básico para Linux.
 
 

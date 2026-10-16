@@ -62,7 +62,6 @@ Artifacts are written to `dist/`.
 - Containers (Docker) usually appear as `docker-proxy`, so underlying Node processes may not be visible.
 
 ## 📸 Roadmap
-- [ ] Alternate scan mode for Node processes that are not listening on sockets.
 - [ ] Basic Linux support.
 
 
