@@ -1,7 +1,7 @@
 {
   "name": "node-killer",
   "version": "0.4.0",
-  "description": "⚡️ Node Killer — macOS menubar app to monitor and terminate Node.js processes (aka your dev servers).",
+  "description": "\u26a1\ufe0f Node Killer \u2014 macOS menubar app to monitor and terminate Node.js processes (aka your dev servers).",
   "main": "src/main.js",
   "author": "Adolfo Flores (https://github.com/adolfoflores)",
   "license": "MIT",
@@ -42,6 +42,11 @@
         "dmg",
         "zip"
       ]
+    }
+  },
+  "overrides": {
+    "ajv": {
+      "fast-uri": "4.1.5"
     }
   }
 }
