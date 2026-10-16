@@ -40,7 +40,7 @@ You can grab the latest pre-built binary from the [Releases page](https://github
 [Latest release](https://github.com/adolfoflores/node-killer/releases/latest) (grab the `.dmg`)
 
 > 🖥️ Currently only Apple Silicon (arm64) builds are provided.  
-> macOS will ask for confirmation the first time you run the app.  
+> The app isn't notarized, so macOS blocks the first launch: open **System Settings → Privacy & Security** and click **Open Anyway**.  
 
 ## 🎥 Demo
 

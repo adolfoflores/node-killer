@@ -42,7 +42,7 @@ Puedes descargar el binario precompilado más reciente desde la [página de lanz
 [Última versión](https://github.com/adolfoflores/node-killer/releases/latest) (descarga el `.dmg`)
 
 > 🖥️ Actualmente solo se proporcionan compilaciones para Apple Silicon (arm64).  
-> macOS solicitará confirmación la primera vez que ejecutes la aplicación.  
+> La app no está notarizada, así que macOS bloquea el primer arranque: abre **Configuración del Sistema → Privacidad y seguridad** y haz clic en **Abrir de todos modos**.  
 
 ## 🎥 Demostración
 
