@@ -1,0 +1,53 @@
+name: Release
+
+# Builds the macOS app and attaches it to a draft GitHub release.
+# Trigger it by pushing a version tag:
+#   npm version patch   # or minor / major
+#   git push --follow-tags
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # macos-latest runs on Apple Silicon, so this produces the arm64 build.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Check tag matches package.json version
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version ($expected)"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - name: Build
+        run: npx electron-builder --mac --arm64 --publish never
+        env:
+          # No Developer ID certificate: skip signing instead of searching the keychain.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Create draft release
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --verify-tag \
+            --title "Node Killer $GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*.dmg dist/*.zip
+        env:
+          GH_TOKEN: ${{ github.token }}
