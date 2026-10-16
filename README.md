@@ -13,7 +13,7 @@
 ## ✨ Features
 - 📊 **Live counter** in the status bar — instantly shows how many dev servers (Node.js, Vite, Bun) are listening (`active: 4`), optionally with their total memory or CPU (`⚡️ 4 · 1.4 GB`).  
 - 🖱️ **Interactive tray menu** — lists every active process with its ports, command, CPU, memory, and uptime (`vite :5173 — vite dev · 3% · 120 MB · 2h`).  
-- 🔪 **One-click kill** — terminate individual Node/Vite/Bun processes with success/error notifications.  
+- 🔪 **One-click kill** — stops a dev server together with the tool that started it (npm, next dev, …) and its workers, like Ctrl-C, with success/error notifications.  
 - 💣 **Kill all** — wipe out every running process of the enabled types, with confirmation and summary.  
 - 🔄 **Smart auto-refresh** — updates every 5 seconds plus a manual **Refresh** option.  
 - 🧰 **Customizable preferences** — adjust refresh rate, auto-launch, status-bar display mode, and which process types to monitor.
