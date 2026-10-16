@@ -2,7 +2,7 @@ const Store = require('electron-store');
 
 const DEFAULT_REFRESH_MS = 5000;
 const REFRESH_CHOICES = [1000, 5000, 10000, 'paused'];
-const DISPLAY_MODES = ['number', 'icon-plus-number', 'icon-only'];
+const DISPLAY_MODES = ['number', 'icon-plus-number', 'number-plus-memory', 'number-plus-cpu', 'icon-only'];
 
 const defaults = {
   autoLaunch: false,

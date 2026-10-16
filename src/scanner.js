@@ -149,6 +149,28 @@ function parsePsOutput(stdout = '') {
   return stats;
 }
 
+const FOOTPRINT_UNITS = { B: 1 / 1024, KB: 1, MB: 1024, GB: 1024 * 1024 };
+
+// Parse output from: footprint -p <pid> -p <pid> …
+// e.g. "node [84988]: 64-bit    Footprint: 361 MB (16384 bytes per page)"
+// This is the memory Activity Monitor shows; ps RSS leaves out compressed memory.
+function parseFootprintOutput(stdout = '') {
+  const memoryKbByPid = new Map();
+  for (const line of stdout.split(/\r?\n/)) {
+    const m = line.match(/\[(\d+)\]:.*Footprint:\s*([\d.,]+)\s*(B|KB|MB|GB)\b/);
+    if (!m) continue;
+    const value = Number(m[2].replace(',', '.'));
+    if (Number.isFinite(value)) memoryKbByPid.set(Number(m[1]), value * FOOTPRINT_UNITS[m[3]]);
+  }
+  return memoryKbByPid;
+}
+
+// Prefer the footprint, fall back to RSS when footprint couldn't read the process
+function memoryKbOf(stats) {
+  if (!stats) return 0;
+  return Number.isFinite(stats.memoryKb) ? stats.memoryKb : stats.rssKb || 0;
+}
+
 const INTERPRETERS = new Set(['node', 'nodejs', 'bun']);
 const FLAGS_WITH_VALUE = new Set(['-r', '--require', '--import', '--loader', '-e', '--eval']);
 const SCRIPT_EXTENSION = /\.(?:c|m)?[jt]s$/;
@@ -218,12 +240,31 @@ function buildProcessLabel(proc) {
   if (summary) label += ` — ${summary}`;
 
   if (proc.stats) {
-    const details = [formatCpu(proc.stats.cpu), formatMemory(proc.stats.rssKb)];
+    const details = [formatCpu(proc.stats.cpu), formatMemory(memoryKbOf(proc.stats))];
     const uptime = formatUptime(proc.stats.elapsedSeconds);
     if (uptime) details.push(uptime);
     label += ` · ${details.join(' · ')}`;
   }
   return label;
+}
+
+// Status bar text for each display mode (icon-only shows no text)
+function formatTrayTitle(mode, procs = []) {
+  const count = procs.length;
+  const totalCpu = procs.reduce((total, p) => total + (p.stats ? p.stats.cpu : 0), 0);
+  const totalMemoryKb = procs.reduce((total, p) => total + memoryKbOf(p.stats), 0);
+  switch (mode) {
+    case 'icon-plus-number':
+      return `⚡️ ${count}`;
+    case 'number-plus-memory':
+      return count > 0 ? `⚡️ ${count} · ${formatMemory(totalMemoryKb)}` : `⚡️ ${count}`;
+    case 'number-plus-cpu':
+      return count > 0 ? `⚡️ ${count} · ${formatCpu(totalCpu)}` : `⚡️ ${count}`;
+    case 'icon-only':
+      return '';
+    default:
+      return ` active: ${count} `;
+  }
 }
 
 module.exports = {
@@ -234,9 +275,11 @@ module.exports = {
   classifyCommand,
   parseElapsed,
   parsePsOutput,
+  parseFootprintOutput,
   summarizeCommand,
   formatMemory,
   formatCpu,
   formatUptime,
   buildProcessLabel,
+  formatTrayTitle,
 };

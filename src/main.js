@@ -9,8 +9,10 @@ const {
   parseLsofOutputHuman,
   parseLsofOutputFields,
   parsePsOutput,
+  parseFootprintOutput,
   classifyCommand,
   buildProcessLabel,
+  formatTrayTitle,
 } = require('./scanner');
 const { REFRESH_CHOICES, DEFAULT_REFRESH_MS } = prefs;
 
@@ -233,6 +235,25 @@ function scanProcessCommand(processCommand) {
   });
 }
 
+// Memory as Activity Monitor reports it (ps RSS misses compressed memory on macOS)
+function readMemoryFootprints(pids) {
+  return new Promise((resolve) => {
+    if (!isMac || pids.length === 0) {
+      resolve(new Map());
+      return;
+    }
+    const args = pids.flatMap((pid) => ['-p', String(pid)]);
+    const options = { timeout: 3000, maxBuffer: 10 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } };
+    execFile('footprint', args, options, (error, stdout) => {
+      // Processes we can't inspect (other users) are skipped; their RSS is used instead
+      if (error && !stdout) {
+        console.debug('[footprint] error:', error.message || error);
+      }
+      resolve(parseFootprintOutput(stdout || ''));
+    });
+  });
+}
+
 // Main function to scan for all enabled process types
 async function scanProcessListeners() {
   const enabledTypes = prefs.getProcessTypes();
@@ -259,10 +280,12 @@ async function scanProcessListeners() {
     }
   }
 
-  const statsByPid = await readProcessStats(listeners.map((p) => p.pid));
+  const pids = listeners.map((p) => p.pid);
+  const [statsByPid, memoryKbByPid] = await Promise.all([readProcessStats(pids), readMemoryFootprints(pids)]);
 
   for (const { lsofCommand, ...process } of listeners) {
-    const stats = statsByPid.get(process.pid) || null;
+    const psStats = statsByPid.get(process.pid);
+    const stats = psStats ? { ...psStats, memoryKb: memoryKbByPid.get(process.pid) } : null;
     const commandLine = stats ? stats.commandLine : '';
     const processType = classifyCommand(commandLine, lsofCommand);
 
@@ -284,7 +307,7 @@ function buildMenuAndUpdate(procs = []) {
   latestProcesses = Array.isArray(procs) ? procs : [];
   const count = latestProcesses.length;
 
-  applyDisplayMode(count);
+  applyDisplayMode(latestProcesses);
   tray?.setToolTip(`Node Killer — active processes: ${count}`);
 
   const items = [];
@@ -372,19 +395,11 @@ function rebuildMenuFromCache() {
   buildMenuAndUpdate(latestProcesses);
 }
 
-function applyDisplayMode(count) {
+function applyDisplayMode(procs = latestProcesses) {
   if (!tray) return;
   const mode = prefs.getDisplayMode();
   if (isMac) {
-    if (mode === 'number') {
-      tray.setTitle(` active: ${count} `);
-    } else if (mode === 'icon-plus-number') {
-      tray.setTitle(`⚡️ ${count}`);
-    } else if (mode === 'icon-only') {
-      tray.setTitle('');
-    } else {
-      tray.setTitle(` active: ${count} `);
-    }
+    tray.setTitle(formatTrayTitle(mode, procs));
   }
 
   if (mode === 'icon-only') {
@@ -429,7 +444,7 @@ function createPreferencesWindow() {
 
   const window = new BrowserWindow({
     width: 420,
-    height: 750,
+    height: 810,
     title: 'Preferences',
     resizable: false,
     minimizable: false,
@@ -508,7 +523,7 @@ function createTray() {
     return;
   }
   tray.setToolTip('Node Killer');
-  applyDisplayMode(latestProcesses.length);
+  applyDisplayMode(latestProcesses);
 }
 
 function scheduleNextRefresh() {
@@ -578,7 +593,7 @@ ipcMain.handle('prefs:set-allUsers', async (_event, value) => {
 
 ipcMain.handle('prefs:set-display', async (_event, value) => {
   prefs.setDisplayMode(value);
-  applyDisplayMode(latestProcesses.length);
+  applyDisplayMode(latestProcesses);
   rebuildMenuFromCache();
   return buildPreferencesPayload();
 });
