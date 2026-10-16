@@ -1,6 +1,6 @@
 {
   "name": "node-killer",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "⚡️ Node Killer — macOS menubar app to monitor and terminate Node.js processes (aka your dev servers).",
   "main": "src/main.js",
   "author": "Adolfo Flores (https://github.com/adolfoflores)",
