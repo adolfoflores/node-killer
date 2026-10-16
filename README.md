@@ -36,8 +36,8 @@ Node Killer lives in the macOS menu bar near the clock.
 
 You can grab the latest pre-built binary from the [Releases page](https://github.com/adolfoflores/node-killer/releases).
 
-👉 Direct download for Apple Silicon (M1/M2/M3/M4):  
-[Node-Killer-0.2.0-arm64.dmg](https://github.com/adolfoflores/node-killer/releases/download/v0.2.0/Node-Killer-0.2.0-arm64.dmg)
+👉 Download for Apple Silicon (M1/M2/M3/M4):  
+[Latest release](https://github.com/adolfoflores/node-killer/releases/latest) (grab the `.dmg`)
 
 > 🖥️ Currently only Apple Silicon (arm64) builds are provided.  
 > macOS will ask for confirmation the first time you run the app.  
