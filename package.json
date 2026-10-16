@@ -42,6 +42,7 @@
         "dmg",
         "zip"
       ]
-    }
+    },
+    "afterPack": "scripts/adhoc-sign.js"
   }
 }
