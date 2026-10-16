@@ -2,13 +2,17 @@ const { app, Menu, Tray, nativeImage, Notification, dialog, BrowserWindow, ipcMa
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFile, exec } = require('child_process');
-const { promisify } = require('util');
+const { execFile } = require('child_process');
 const prefs = require('./prefs');
-const { PROCESS_TYPES, parseLsofOutputHuman, parseLsofOutputFields } = require('./scanner');
+const {
+  PROCESS_TYPES,
+  parseLsofOutputHuman,
+  parseLsofOutputFields,
+  parsePsOutput,
+  classifyCommand,
+  buildProcessLabel,
+} = require('./scanner');
 const { REFRESH_CHOICES, DEFAULT_REFRESH_MS } = prefs;
-
-const execAsync = promisify(exec);
 
 /**
  * ⚡️ Node Killer: a minimal macOS menubar app that hunts down and kills your stray Node.js processes.
@@ -148,28 +152,29 @@ function isNoProcessError(error) {
   return Boolean(error && (error.code === 1 || error.code === '1'));
 }
 
-// Helper function to classify process type based on command line
-async function classifyProcess(pid, lsofCommand) {
-  try {
-    const { stdout } = await execAsync(`ps -p ${pid} -o command=`);
-    const commandLine = stdout.trim();
-
-    // Try to classify based on each enabled process type
-    for (const [typeName, typeConfig] of Object.entries(PROCESS_TYPES)) {
-      if (typeConfig.lsofCommand === lsofCommand) {
-        const classification = typeConfig.classify(commandLine);
-        if (classification) {
-          return classification;
-        }
-      }
+// One ps call for every PID: command line, CPU, memory and uptime
+function readProcessStats(pids) {
+  return new Promise((resolve) => {
+    if (pids.length === 0) {
+      resolve(new Map());
+      return;
     }
-
-    // Default to the lsof command if no classification matches
-    return lsofCommand;
-  } catch (error) {
-    // If we can't get the command line, default to the lsof command
-    return lsofCommand;
-  }
+    const args = ['-o', 'pid=,pgid=,pcpu=,rss=,etime=,command=', '-p', pids.join(',')];
+    // LC_ALL=C keeps decimals as "3.5" regardless of the user's locale
+    const options = { timeout: 3000, maxBuffer: 10 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } };
+    execFile('ps', args, options, (error, stdout) => {
+      // ps exits 1 when a PID is already gone but still prints the others
+      if (error && !stdout) {
+        console.debug('[ps] error:', error.message || error);
+      }
+      try {
+        resolve(parsePsOutput(stdout || ''));
+      } catch (e) {
+        console.error('[parsePsOutput] failed:', e);
+        resolve(new Map());
+      }
+    });
+  });
 }
 
 // Scan for a specific process command (node or bun)
@@ -243,25 +248,32 @@ async function scanProcessListeners() {
   }
 
   // Run lsof for each unique command
+  const listeners = [];
   for (const lsofCommand of lsofCommands) {
     const processes = await scanProcessCommand(lsofCommand);
-
-    // Classify and add processes
     for (const process of processes) {
       // Skip if we've already seen this PID (deduplication)
       if (seenPids.has(process.pid)) continue;
       seenPids.add(process.pid);
+      listeners.push({ ...process, lsofCommand });
+    }
+  }
 
-      // Classify the process type
-      const processType = await classifyProcess(process.pid, lsofCommand);
+  const statsByPid = await readProcessStats(listeners.map((p) => p.pid));
 
-      // Only include if this type is enabled
-      if (enabledTypes[processType]) {
-        allProcesses.push({
-          ...process,
-          type: processType
-        });
-      }
+  for (const { lsofCommand, ...process } of listeners) {
+    const stats = statsByPid.get(process.pid) || null;
+    const commandLine = stats ? stats.commandLine : '';
+    const processType = classifyCommand(commandLine, lsofCommand);
+
+    // Only include if this type is enabled
+    if (enabledTypes[processType]) {
+      allProcesses.push({
+        ...process,
+        type: processType,
+        commandLine,
+        stats,
+      });
     }
   }
 
@@ -278,16 +290,9 @@ function buildMenuAndUpdate(procs = []) {
   const items = [];
 
   for (const p of latestProcesses) {
-    const ports = Array.isArray(p.ports) ? p.ports : [];
-    let portsLabel = '';
-    if (ports.length === 1) {
-      portsLabel = ` (port ${ports[0]})`;
-    } else if (ports.length > 1) {
-      portsLabel = ` (ports ${ports.join(', ')})`;
-    }
-    const processType = p.type || 'node';
     items.push({
-      label: `${processType} ${p.pid}${portsLabel}`,
+      label: buildProcessLabel(p),
+      toolTip: p.commandLine ? `PID ${p.pid} — ${p.commandLine}` : `PID ${p.pid}`,
       click: async () => {
         const res = await killPid(p.pid);
         if (res.ok) {
