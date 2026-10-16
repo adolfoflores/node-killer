@@ -18,7 +18,8 @@
   },
   "scripts": {
     "dev": "electron .",
-    "build": "electron-builder -m"
+    "build": "electron-builder -m",
+    "test": "node --test"
   },
   "devDependencies": {
     "electron": "^38.1.0",

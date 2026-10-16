@@ -35,6 +35,8 @@ jobs:
 
       - run: npm ci
 
+      - run: npm test
+
       - name: Build
         run: npx electron-builder --mac --arm64 --publish never
         env:
