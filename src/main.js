@@ -237,8 +237,8 @@ function parseLsofOutputFields(stdout, processCommand) {
       currentPid = pid;
       if (!processes.has(pid)) processes.set(pid, { pid, ports: new Set(), command: processCommand });
     } else if (key === 'n') {
-      // e.g., "TCP *:3000 (LISTEN)" or "TCP 127.0.0.1:5173 (LISTEN)"
-      const m = val.match(/:(\d+)\s*\(LISTEN\)/);
+      // e.g., "*:3000", "127.0.0.1:5173" or "[::1]:3200" (field mode has no "(LISTEN)" suffix)
+      const m = val.match(/:(\d+)$/);
       const port = m ? Number(m[1]) : null;
       if (currentPid && port) {
         processes.get(currentPid).ports.add(port);
