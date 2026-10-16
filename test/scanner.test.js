@@ -12,6 +12,9 @@ const {
   formatUptime,
   buildProcessLabel,
   formatTrayTitle,
+  parseProcessTable,
+  isDevRunner,
+  planKill,
 } = require('../src/scanner');
 
 test('parseLsofOutputFields reads ports from field mode names', () => {
@@ -52,13 +55,12 @@ test('parseElapsed handles every ps etime shape', () => {
 
 test('parsePsOutput keeps command lines with spaces and comma decimals', () => {
   const stdout = [
-    '84988 84980   3.5 122880 1-03:00:00 /usr/local/bin/node /app/node_modules/.bin/vite dev --port 3200',
-    '  901   901   0,4   2048     00:42 bun run dev',
+    '84988   3.5 122880 1-03:00:00 /usr/local/bin/node /app/node_modules/.bin/vite dev --port 3200',
+    '  901   0,4   2048     00:42 bun run dev',
   ].join('\n');
   const stats = parsePsOutput(stdout);
   assert.deepEqual(stats.get(84988), {
     pid: 84988,
-    pgid: 84980,
     cpu: 3.5,
     rssKb: 122880,
     elapsedSeconds: 97200,
@@ -131,4 +133,78 @@ test('formatTrayTitle sums the stats of every listed process', () => {
   assert.equal(formatTrayTitle('number-plus-cpu', procs), '⚡️ 3 · 12%');
   assert.equal(formatTrayTitle('number-plus-memory', []), '⚡️ 0');
   assert.equal(formatTrayTitle('icon-only', procs), '');
+});
+
+// Build a process table from [pid, ppid, command] rows
+function table(rows) {
+  return parseProcessTable(rows.map(([pid, ppid, command, stat = 'S']) => `${pid} ${ppid} ${stat} ${command}`).join('\n'));
+}
+
+test('parseProcessTable keeps the full command line', () => {
+  const parsed = parseProcessTable(' 6937  6936 S    next-server (v16.3.8) \n    1     0 Ss   /sbin/launchd\n');
+  assert.deepEqual(parsed.get(6937), { pid: 6937, ppid: 6936, stat: 'S', commandLine: 'next-server (v16.3.8)' });
+  assert.equal(parsed.get(1).commandLine, '/sbin/launchd');
+});
+
+test('isDevRunner recognizes package managers and dev tools only', () => {
+  assert.equal(isDevRunner('npm run dev'), true);
+  assert.equal(isDevRunner('node /opt/homebrew/bin/npm run dev'), true);
+  assert.equal(isDevRunner('node /app/node_modules/.bin/next dev'), true);
+  assert.equal(isDevRunner('bun run dev'), true);
+  assert.equal(isDevRunner('/bin/zsh -l'), false);
+  assert.equal(isDevRunner('claude --output-format stream-json'), false);
+  assert.equal(isDevRunner('/Applications/Claude.app/Contents/Helpers/disclaimer -- /opt/homebrew/bin/npm run dev'), false);
+  assert.equal(isDevRunner('node scripts/agent.js'), false);
+});
+
+test('planKill takes down the runner that would restart the server', () => {
+  // Real tree: Next.js started from the Claude app (wrapper → npm → next dev → next-server)
+  const t = table([
+    [93922, 1, '/Applications/Claude.app/Contents/MacOS/Claude'],
+    [6908, 93922, '/Applications/Claude.app/Contents/Helpers/disclaimer -- /opt/homebrew/bin/npm run dev'],
+    [6911, 6908, 'npm run dev'],
+    [6936, 6911, 'node /app/node_modules/.bin/next dev'],
+    [6937, 6936, 'next-server (v16.3.8)'],
+    [6938, 6937, 'node /app/node_modules/next/dist/compiled/jest-worker/processChild.js'],
+  ]);
+  assert.deepEqual(planKill(t, [6937], 500), [6911, 6936, 6937, 6938]);
+});
+
+test('planKill never climbs past a shell, an editor or an agent', () => {
+  const t = table([
+    [100, 1, '/bin/zsh -l'],
+    [200, 100, 'npm run dev'],
+    [201, 200, 'sh -c vite'],
+    [202, 201, 'node /app/node_modules/.bin/vite'],
+    [203, 202, '/app/node_modules/@esbuild/darwin-arm64/bin/esbuild --service=0.21.5 --ping'],
+    [300, 1, 'claude'],
+    [301, 300, '/bin/bash -c npm run dev'],
+    [302, 301, 'npm run dev'],
+    [303, 302, 'node /web/node_modules/.bin/vite'],
+    [400, 1, '/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)'],
+    [401, 400, 'node /ext/server.js --port 6009'],
+  ]);
+  assert.deepEqual(planKill(t, [202], 999), [202, 203]); // npm exits by itself once its script ends
+  assert.deepEqual(planKill(t, [303], 999), [302, 303]); // claude and its shell survive
+  assert.deepEqual(planKill(t, [401], 999), [401]); // VS Code survives
+});
+
+test('planKill never includes Node Killer or its ancestors', () => {
+  // Developing Node Killer itself: npm run dev → electron (us), next to another server under the same npm
+  const t = table([
+    [600, 1, 'npm run dev'],
+    [601, 600, '/app/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron .'],
+    [602, 600, 'node /app/node_modules/.bin/next dev'],
+    [603, 602, 'next-server (v16.3.8)'],
+  ]);
+  assert.deepEqual(planKill(t, [603], 601), [602, 603]);
+});
+
+test('planKill merges servers that share a runner and keeps unknown PIDs', () => {
+  const t = table([
+    [700, 1, 'pnpm dev'],
+    [701, 700, 'node /app/node_modules/.bin/vite'],
+    [702, 700, 'node /app/node_modules/.bin/vite --port 5174'],
+  ]);
+  assert.deepEqual(planKill(t, [701, 702, 9999], 1), [700, 701, 702, 9999]);
 });

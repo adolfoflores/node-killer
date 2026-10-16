@@ -13,6 +13,8 @@ const {
   classifyCommand,
   buildProcessLabel,
   formatTrayTitle,
+  parseProcessTable,
+  planKill,
 } = require('./scanner');
 const { REFRESH_CHOICES, DEFAULT_REFRESH_MS } = prefs;
 
@@ -123,31 +125,72 @@ function isPidAlive(pid) {
   }
 }
 
-async function killPid(pid) {
-  // Try SIGTERM then SIGKILL
-  try {
-    process.kill(pid, 'SIGTERM');
-  } catch (err) {
-    return { pid, ok: false, step: 'SIGTERM', error: err.message || String(err) };
-  }
+function readProcessTable() {
+  return new Promise((resolve) => {
+    const options = { timeout: 3000, maxBuffer: 20 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } };
+    execFile('ps', ['-Ao', 'pid=,ppid=,stat=,command='], options, (error, stdout) => {
+      if (error && !stdout) {
+        console.debug('[ps -A] error:', error.message || error);
+      }
+      resolve(parseProcessTable(stdout || ''));
+    });
+  });
+}
 
+// Returns the PIDs that refused the signal for a reason other than being gone already
+function signalAll(pids, signal) {
+  const denied = [];
+  for (const pid of pids) {
+    try {
+      process.kill(pid, signal);
+    } catch (err) {
+      if (err && err.code === 'EPERM') denied.push(pid);
+    }
+  }
+  return denied;
+}
+
+// Zombies answer kill(pid, 0) but are already dead: they only wait for their parent to reap them
+async function stillRunning(pids) {
+  const alive = pids.filter(isPidAlive);
+  if (alive.length === 0) return { alive, table: null };
+  const table = await readProcessTable();
+  return { alive: alive.filter((pid) => !(table.get(pid)?.stat || '').startsWith('Z')), table };
+}
+
+// Stop each server like Ctrl-C would: together with the dev runner that started it
+// (npm, next dev, …) and every process they started. SIGTERM first, then SIGKILL.
+async function killServers(serverPids) {
+  const targets = planKill(await readProcessTable(), serverPids, process.pid);
+  const count = targets.length;
+
+  const denied = signalAll(targets, 'SIGTERM');
   await sleep(500);
-  if (!isPidAlive(pid)) {
-    return { pid, ok: true, step: 'SIGTERM' };
+  let { alive } = await stillRunning(targets);
+  if (alive.length === 0) {
+    return { ok: true, step: 'SIGTERM', count };
   }
 
-  try {
-    process.kill(pid, 'SIGKILL');
-  } catch (err) {
-    return { pid, ok: false, step: 'SIGKILL', error: err.message || String(err) };
-  }
-
+  signalAll(alive, 'SIGKILL');
   await sleep(300);
-  if (!isPidAlive(pid)) {
-    return { pid, ok: true, step: 'SIGKILL' };
+  const after = await stillRunning(alive);
+  alive = after.alive;
+  if (alive.length === 0) {
+    return { ok: true, step: 'SIGKILL', count };
   }
 
-  return { pid, ok: false, step: 'SIGKILL', error: 'Process still alive after SIGKILL' };
+  let error = `${alive.length} process(es) still alive after SIGKILL (PID ${alive.join(', ')})`;
+  if (alive.some((pid) => denied.includes(pid))) {
+    error = `Permission denied for PID ${alive.join(', ')} (owned by another user)`;
+  } else if (alive.some((pid) => (after.table?.get(pid)?.stat || '').startsWith('U'))) {
+    error = `PID ${alive.join(', ')} is stuck waiting on the disk or a driver; only a restart will free it`;
+  }
+  return { ok: false, step: 'SIGKILL', count, error };
+}
+
+function relatedSuffix(count, servers = 1) {
+  const related = count - servers;
+  return related > 0 ? ` and ${related} related process${related === 1 ? '' : 'es'}` : '';
 }
 
 function isNoProcessError(error) {
@@ -161,7 +204,7 @@ function readProcessStats(pids) {
       resolve(new Map());
       return;
     }
-    const args = ['-o', 'pid=,pgid=,pcpu=,rss=,etime=,command=', '-p', pids.join(',')];
+    const args = ['-o', 'pid=,pcpu=,rss=,etime=,command=', '-p', pids.join(',')];
     // LC_ALL=C keeps decimals as "3.5" regardless of the user's locale
     const options = { timeout: 3000, maxBuffer: 10 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } };
     execFile('ps', args, options, (error, stdout) => {
@@ -317,9 +360,9 @@ function buildMenuAndUpdate(procs = []) {
       label: buildProcessLabel(p),
       toolTip: p.commandLine ? `PID ${p.pid} — ${p.commandLine}` : `PID ${p.pid}`,
       click: async () => {
-        const res = await killPid(p.pid);
+        const res = await killServers([p.pid]);
         if (res.ok) {
-          notify('✅ Process terminated', `PID ${p.pid} (${res.step})`);
+          notify('✅ Process terminated', `PID ${p.pid}${relatedSuffix(res.count)} (${res.step})`);
         } else {
           notify('❌ Could not terminate', `PID ${p.pid} — ${res.step} — ${res.error || ''}`);
         }
@@ -342,7 +385,7 @@ function buildMenuAndUpdate(procs = []) {
           defaultId: 1,
           cancelId: 0,
           message: count === 1 ? 'Kill 1 process?' : `Kill ${count} processes?`,
-          detail: 'Each listed process will receive SIGTERM. If it survives, SIGKILL is sent next.',
+          detail: 'Each server is stopped together with the dev tool that started it (npm, next dev, …), like Ctrl-C. Processes get SIGTERM first and SIGKILL if they survive.',
         });
         if (response !== 1) {
           return;
@@ -351,22 +394,12 @@ function buildMenuAndUpdate(procs = []) {
         console.error('Kill all confirmation failed:', e);
         return;
       }
-      let ok = 0;
-      let fail = 0;
-      const failed = [];
-      const snapshot = [...latestProcesses];
-      for (const processInfo of snapshot) {
-        const res = await killPid(processInfo.pid);
-        if (res.ok) ok++;
-        else {
-          fail++;
-          failed.push(`${processInfo.pid} (${res.step})`);
-        }
-      }
-      if (fail === 0) {
-        notify('✅ Kill all', `${ok} processes terminated.`);
+      const snapshot = latestProcesses.map((processInfo) => processInfo.pid);
+      const res = await killServers(snapshot);
+      if (res.ok) {
+        notify('✅ Kill all', `${snapshot.length} processes${relatedSuffix(res.count, snapshot.length)} terminated.`);
       } else {
-        notify('⚠️ Kill all with issues', `${ok} succeeded, ${fail} failed — ${failed.join(', ')}`);
+        notify('⚠️ Kill all with issues', res.error || 'Some processes could not be terminated.');
       }
       await performRefresh();
       scheduleNextRefresh();

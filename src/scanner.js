@@ -130,20 +130,19 @@ function parseElapsed(etime = '') {
   return Number(days) * 86400 + Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds);
 }
 
-// Parse output from: ps -o pid=,pgid=,pcpu=,rss=,etime=,command= -p <pids>
+// Parse output from: ps -o pid=,pcpu=,rss=,etime=,command= -p <pids>
 function parsePsOutput(stdout = '') {
-  const stats = new Map(); // pid -> { pid, pgid, cpu, rssKb, elapsedSeconds, commandLine }
+  const stats = new Map(); // pid -> { pid, cpu, rssKb, elapsedSeconds, commandLine }
   for (const line of stdout.split(/\r?\n/)) {
-    const m = line.match(/^\s*(\d+)\s+(\d+)\s+([\d.,]+)\s+(\d+)\s+(\S+)\s+(.*)$/);
+    const m = line.match(/^\s*(\d+)\s+([\d.,]+)\s+(\d+)\s+(\S+)\s+(.*)$/);
     if (!m) continue;
     const pid = Number(m[1]);
     stats.set(pid, {
       pid,
-      pgid: Number(m[2]),
-      cpu: Number(m[3].replace(',', '.')) || 0,
-      rssKb: Number(m[4]) || 0,
-      elapsedSeconds: parseElapsed(m[5]),
-      commandLine: m[6].trim(),
+      cpu: Number(m[2].replace(',', '.')) || 0,
+      rssKb: Number(m[3]) || 0,
+      elapsedSeconds: parseElapsed(m[4]),
+      commandLine: m[5].trim(),
     });
   }
   return stats;
@@ -248,6 +247,87 @@ function buildProcessLabel(proc) {
   return label;
 }
 
+// Parse output from: ps -Ao pid=,ppid=,stat=,command=
+function parseProcessTable(stdout = '') {
+  const table = new Map(); // pid -> { pid, ppid, stat, commandLine }
+  for (const line of stdout.split(/\r?\n/)) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    table.set(pid, { pid, ppid: Number(m[2]), stat: m[3], commandLine: m[4].trim() });
+  }
+  return table;
+}
+
+// Tools that start (and often restart) the actual dev server as a child process.
+// Killing only the child would let them bring it right back.
+const DEV_RUNNERS = new Set([
+  'npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'bunx',
+  'next', 'nuxt', 'nuxi', 'astro', 'remix', 'vite', 'nodemon', 'tsx', 'ts-node-dev', 'node-dev',
+]);
+
+function isDevRunner(commandLine = '') {
+  const tokens = String(commandLine).trim().split(/\s+/);
+  // "bun run dev" / "bun x vite": bun acting as the package runner
+  if (scriptName(tokens[0] || '') === 'bun' && ['run', 'x'].includes(tokens[1])) return true;
+  const firstWord = summarizeCommand(commandLine, Infinity).split(' ')[0];
+  return DEV_RUNNERS.has(firstWord);
+}
+
+// Climb from the server through parents that are dev runners (npm → next dev → next-server)
+// and stop at anything else: a shell, an editor, an agent, launchd.
+function findKillRoot(table, pid, protectedPids = new Set()) {
+  let root = pid;
+  let parent = table.get(table.get(root)?.ppid);
+  while (parent && parent.pid > 1 && !protectedPids.has(parent.pid) && isDevRunner(parent.commandLine)) {
+    root = parent.pid;
+    parent = table.get(parent.ppid);
+  }
+  return root;
+}
+
+function collectSubtree(table, rootPid) {
+  const children = new Map();
+  for (const proc of table.values()) {
+    if (!children.has(proc.ppid)) children.set(proc.ppid, []);
+    children.get(proc.ppid).push(proc.pid);
+  }
+  const pids = [];
+  const queue = [rootPid];
+  const seen = new Set();
+  while (queue.length > 0) {
+    const pid = queue.shift();
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    pids.push(pid);
+    queue.push(...(children.get(pid) || []));
+  }
+  return pids;
+}
+
+// Every PID to signal so each server goes away the way Ctrl-C would take it down:
+// the server, the dev runners that started it, and everything they started.
+// Node Killer itself and its ancestors are never included.
+function planKill(table, serverPids, ownPid) {
+  const protectedPids = new Set();
+  for (let proc = table.get(ownPid); proc && proc.pid > 1; proc = table.get(proc.ppid)) {
+    if (protectedPids.has(proc.pid)) break;
+    protectedPids.add(proc.pid);
+  }
+
+  const targets = new Set();
+  for (const pid of serverPids) {
+    if (!table.has(pid)) {
+      targets.add(pid); // already gone or not visible; signalling it is harmless
+      continue;
+    }
+    for (const member of collectSubtree(table, findKillRoot(table, pid, protectedPids))) {
+      if (member > 1 && !protectedPids.has(member)) targets.add(member);
+    }
+  }
+  return Array.from(targets).sort((a, b) => a - b);
+}
+
 // Status bar text for each display mode (icon-only shows no text)
 function formatTrayTitle(mode, procs = []) {
   const count = procs.length;
@@ -282,4 +362,8 @@ module.exports = {
   formatUptime,
   buildProcessLabel,
   formatTrayTitle,
+  parseProcessTable,
+  isDevRunner,
+  findKillRoot,
+  planKill,
 };
