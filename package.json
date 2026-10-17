@@ -19,7 +19,8 @@
   "scripts": {
     "dev": "electron .",
     "build": "electron-builder -m",
-    "test": "node --test"
+    "test": "node --test",
+    "install:local": "sh scripts/install-local.sh"
   },
   "devDependencies": {
     "electron": "^38.1.0",
