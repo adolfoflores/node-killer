@@ -15,6 +15,9 @@ const {
   formatTrayTitle,
   parseProcessTable,
   planKill,
+  parseLsofCwdOutput,
+  describeProject,
+  sortProcesses,
 } = require('./scanner');
 const { REFRESH_CHOICES, DEFAULT_REFRESH_MS } = prefs;
 
@@ -297,6 +300,47 @@ function readMemoryFootprints(pids) {
   });
 }
 
+// Working folder of each process, with one lsof call
+function readWorkingDirs(pids) {
+  return new Promise((resolve) => {
+    if (pids.length === 0) {
+      resolve(new Map());
+      return;
+    }
+    const args = ['-a', '-d', 'cwd', '-Fn', '-p', pids.join(',')];
+    execFile('lsof', args, { timeout: 3000, maxBuffer: 10 * 1024 * 1024 }, (error, stdout) => {
+      // lsof exits 1 when a PID is already gone but still prints the others
+      if (error && !stdout && !isNoProcessError(error)) {
+        console.debug('[lsof cwd] error:', error.message || error);
+      }
+      resolve(parseLsofCwdOutput(stdout || ''));
+    });
+  });
+}
+
+// pid + command line -> { cwd, project }. A dev server rarely changes folder, so each
+// process is looked up once; entries go away when the process does.
+const projectCache = new Map();
+
+async function lookUpProjects(procs) {
+  const keyOf = (p) => `${p.pid}\0${p.commandLine}`;
+  const liveKeys = new Set(procs.map(keyOf));
+  for (const key of projectCache.keys()) {
+    if (!liveKeys.has(key)) projectCache.delete(key);
+  }
+
+  const missing = procs.filter((p) => !projectCache.has(keyOf(p)));
+  if (missing.length > 0) {
+    const cwdByPid = await readWorkingDirs(missing.map((p) => p.pid));
+    for (const p of missing) {
+      const cwd = cwdByPid.get(p.pid) || null;
+      // Not cached when lsof gave no folder, so it is tried again on the next refresh
+      if (cwd) projectCache.set(keyOf(p), { cwd, project: describeProject(cwd) });
+    }
+  }
+  return procs.map((p) => ({ ...p, ...(projectCache.get(keyOf(p)) || { cwd: null, project: null }) }));
+}
+
 // Main function to scan for all enabled process types
 async function scanProcessListeners() {
   const enabledTypes = prefs.getProcessTypes();
@@ -343,7 +387,7 @@ async function scanProcessListeners() {
     }
   }
 
-  return allProcesses;
+  return sortProcesses(await lookUpProjects(allProcesses));
 }
 
 function buildMenuAndUpdate(procs = []) {
@@ -358,7 +402,7 @@ function buildMenuAndUpdate(procs = []) {
   for (const p of latestProcesses) {
     items.push({
       label: buildProcessLabel(p),
-      toolTip: p.commandLine ? `PID ${p.pid} — ${p.commandLine}` : `PID ${p.pid}`,
+      toolTip: [`PID ${p.pid}`, p.cwd, p.commandLine].filter(Boolean).join('\n'),
       click: async () => {
         const res = await killServers([p.pid]);
         if (res.ok) {

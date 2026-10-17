@@ -15,7 +15,14 @@ const {
   parseProcessTable,
   isDevRunner,
   planKill,
+  parseLsofCwdOutput,
+  describeProject,
+  formatProject,
+  sortProcesses,
 } = require('../src/scanner');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 test('parseLsofOutputFields reads ports from field mode names', () => {
   // Real `lsof -F pcPn` output: names have no "(LISTEN)" suffix (regression for v0.2.2)
@@ -207,4 +214,73 @@ test('planKill merges servers that share a runner and keeps unknown PIDs', () =>
     [702, 700, 'node /app/node_modules/.bin/vite --port 5174'],
   ]);
   assert.deepEqual(planKill(t, [701, 702, 9999], 1), [700, 701, 702, 9999]);
+});
+
+test('parseLsofCwdOutput maps each PID to its working folder', () => {
+  const stdout = ['p84988', 'fcwd', 'n/Users/me/Repositories/chetucasa', 'p6937', 'fcwd', 'n/Users/me/My Projects/api', ''].join('\n');
+  const cwd = parseLsofCwdOutput(stdout);
+  assert.equal(cwd.get(84988), '/Users/me/Repositories/chetucasa');
+  assert.equal(cwd.get(6937), '/Users/me/My Projects/api');
+});
+
+// A fake home folder with a plain repo, a worktree, a submodule-style .git file and a package without git
+function makeHome() {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nk-home-')));
+  const mk = (rel) => fs.mkdirSync(path.join(home, rel), { recursive: true });
+  const write = (rel, text) => fs.writeFileSync(path.join(home, rel), text);
+  mk('Repos/api/.git/worktrees/feature-x');
+  mk('Repos/api/apps/web');
+  write('Repos/api/package.json', '{"name":"api-monorepo"}');
+  mk('Repos/api-wt/feature-x/src');
+  write('Repos/api-wt/feature-x/.git', `gitdir: ${home}/Repos/api/.git/worktrees/feature-x\n`);
+  mk('Repos/shop/libs/ui');
+  write('Repos/shop/libs/ui/.git', 'gitdir: ../../.git/modules/ui\n');
+  mk('Repos/shop/.git');
+  mk('Sandbox/demo/src');
+  write('Sandbox/demo/package.json', '{"name":"demo-app"}');
+  mk('Downloads');
+  return home;
+}
+
+test('describeProject finds the git repo, worktree or package name', () => {
+  const home = makeHome();
+  const at = (rel) => describeProject(path.join(home, rel), home);
+  try {
+    assert.deepEqual(at('Repos/api'), { project: 'api', worktree: null });
+    assert.deepEqual(at('Repos/api/apps/web'), { project: 'api', worktree: null }); // git wins over package.json
+    assert.deepEqual(at('Repos/api-wt/feature-x/src'), { project: 'api', worktree: 'feature-x' });
+    assert.deepEqual(at('Repos/shop/libs/ui'), { project: 'ui', worktree: null }); // submodule: its own folder
+    assert.deepEqual(at('Sandbox/demo/src'), { project: 'demo-app', worktree: null });
+    assert.equal(at('Downloads'), null);
+    assert.equal(describeProject(home, home), null); // the home folder itself is never a project
+    assert.equal(describeProject('', home), null);
+    assert.equal(describeProject('relative/path', home), null);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('describeProject ignores a git repo in the home folder', () => {
+  const home = makeHome();
+  try {
+    fs.mkdirSync(path.join(home, '.git')); // e.g. a dotfiles repo
+    assert.equal(describeProject(path.join(home, 'Downloads'), home), null);
+    assert.deepEqual(describeProject(path.join(home, 'Repos/api'), home), { project: 'api', worktree: null });
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('project names lead the label and sort the menu', () => {
+  const stats = { cpu: 0, rssKb: 0, memoryKb: 463 * 1024, elapsedSeconds: 101000 };
+  const vite = { pid: 84988, type: 'vite', ports: [3200], commandLine: 'node /c/node_modules/.bin/vite dev', stats, project: { project: 'chetucasa', worktree: null } };
+  const wt = { pid: 4, type: 'node', ports: [4000], commandLine: 'node server.js', stats: null, project: { project: 'api', worktree: 'feature-x' } };
+  const next = { pid: 5, type: 'node', ports: [3000], commandLine: 'next-server (v16.3.8)', stats: null, project: { project: 'api', worktree: null } };
+  const loose = { pid: 9, type: 'bun', ports: [2000], commandLine: 'bun run dev', stats: null, project: null };
+
+  assert.equal(buildProcessLabel(vite), 'chetucasa · vite :3200 — vite dev · 0% · 463 MB · 1d 4h');
+  assert.equal(buildProcessLabel(wt), 'api › feature-x · node :4000 — server.js');
+  assert.equal(buildProcessLabel(loose), 'bun :2000 — run dev');
+  assert.equal(formatProject(null), '');
+  assert.deepEqual(sortProcesses([loose, vite, wt, next]).map((p) => p.pid), [5, 4, 84988, 9]);
 });

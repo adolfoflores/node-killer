@@ -1,6 +1,9 @@
 // Pure helpers for finding and describing dev-server processes.
 // Nothing here touches Electron, so it can be unit tested with `npm test`.
 
+const fs = require('fs');
+const path = require('path');
+
 const VITE_PATTERN = /(?:^|[=\/@\s"'`])vite(?:\.js)?(?=$|[\s"'`/:@])/;
 
 function looksLikeViteProcess(commandLine = '') {
@@ -229,11 +232,91 @@ function formatUptime(seconds) {
   return `${seconds}s`;
 }
 
-// "vite :5173 — vite dev · 3% · 120 MB · 2h"
+// Parse output from: lsof -a -d cwd -Fn -p <pids>
+function parseLsofCwdOutput(stdout = '') {
+  const cwdByPid = new Map();
+  let currentPid = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.startsWith('p')) {
+      currentPid = Number(line.slice(1)) || null;
+    } else if (line.startsWith('n') && currentPid && !cwdByPid.has(currentPid)) {
+      cwdByPid.set(currentPid, line.slice(1));
+    }
+  }
+  return cwdByPid;
+}
+
+function readPackageName(dir) {
+  try {
+    const { name } = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    return typeof name === 'string' && name.trim() ? name.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+// Which project a process runs in, from its working folder:
+// the git repo it belongs to (and the worktree, if it runs in one), else the package.json name.
+// Never looks at the home folder itself or above it.
+function describeProject(cwd, home = require('os').homedir()) {
+  if (!cwd || !path.isAbsolute(cwd)) return null;
+  const insideHome = cwd.startsWith(home + path.sep);
+  let packageName = null;
+
+  for (let dir = path.normalize(cwd); ; dir = path.dirname(dir)) {
+    if (dir === path.dirname(dir)) break; // reached /
+    if (insideHome && !dir.startsWith(home + path.sep)) break;
+
+    const gitPath = path.join(dir, '.git');
+    let gitStat = null;
+    try {
+      gitStat = fs.statSync(gitPath);
+    } catch {}
+    if (gitStat && gitStat.isDirectory()) {
+      return { project: path.basename(dir), worktree: null };
+    }
+    if (gitStat && gitStat.isFile()) {
+      // Worktrees have a ".git" file: "gitdir: /path/to/repo/.git/worktrees/<name>"
+      let gitdir = '';
+      try {
+        gitdir = (fs.readFileSync(gitPath, 'utf8').match(/^gitdir:\s*(.+)$/m) || [])[1] || '';
+      } catch {}
+      const worktree = path.resolve(dir, gitdir.trim()).match(/^(.+)\/\.git\/worktrees\/([^/]+)$/);
+      if (worktree) return { project: path.basename(worktree[1]), worktree: worktree[2] };
+      return { project: path.basename(dir), worktree: null }; // submodule or other layout
+    }
+    if (!packageName) packageName = readPackageName(dir);
+  }
+  return packageName ? { project: packageName, worktree: null } : null;
+}
+
+function formatProject(info) {
+  if (!info || !info.project) return '';
+  return info.worktree ? `${info.project} › ${info.worktree}` : info.project;
+}
+
+// Group the menu by project (alphabetically, unknown last), then by port
+function sortProcesses(procs = []) {
+  const key = (p) => formatProject(p.project).toLowerCase();
+  const firstPort = (p) => (Array.isArray(p.ports) && p.ports.length > 0 ? p.ports[0] : Infinity);
+  return [...procs].sort((a, b) => {
+    const ka = key(a);
+    const kb = key(b);
+    if (ka !== kb) {
+      if (!ka) return 1;
+      if (!kb) return -1;
+      return ka < kb ? -1 : 1;
+    }
+    return firstPort(a) - firstPort(b) || a.pid - b.pid;
+  });
+}
+
+// "mi-repo › worktree-b · vite :5173 — vite dev · 3% · 120 MB · 2h"
 function buildProcessLabel(proc) {
   const ports = Array.isArray(proc.ports) ? proc.ports : [];
   const where = ports.length > 0 ? ports.map((port) => `:${port}`).join(' ') : `pid ${proc.pid}`;
-  let label = `${proc.type || 'node'} ${where}`;
+  const project = formatProject(proc.project);
+  let label = `${project ? `${project} · ` : ''}${proc.type || 'node'} ${where}`;
 
   const summary = proc.commandLine ? summarizeCommand(proc.commandLine) : '';
   if (summary) label += ` — ${summary}`;
@@ -362,6 +445,10 @@ module.exports = {
   formatUptime,
   buildProcessLabel,
   formatTrayTitle,
+  parseLsofCwdOutput,
+  describeProject,
+  formatProject,
+  sortProcesses,
   parseProcessTable,
   isDevRunner,
   findKillRoot,
