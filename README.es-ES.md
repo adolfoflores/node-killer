@@ -14,7 +14,7 @@
 
 ## ✨ Características
 - 📊 **Contador en tiempo real** en la barra de estado: muestra instantáneamente cuántos servidores de desarrollo (Node.js, Vite, Bun) están escuchando (`active: 4`), con la opción de mostrar también su memoria o CPU total (`⚡️ 4 · 1.4 GB`).  
-- 🖱️ **Menú interactivo en la bandeja** — lista cada proceso activo con sus puertos, comando, CPU, memoria y tiempo en ejecución (`vite :5173 — vite dev · 3% · 120 MB · 2h`).  
+- 🖱️ **Menú interactivo en la bandeja** — lista cada proceso activo con su proyecto (repo de git o worktree), puertos, comando, CPU, memoria y tiempo en ejecución (`my-app › feature-x · vite :5173 — vite dev · 3% · 120 MB · 2h`).  
 - 🔪 **Terminación con un clic** — detiene un servidor de desarrollo junto con la herramienta que lo inició (npm, next dev, …) y sus workers, como Ctrl-C, con notificaciones de éxito o error.  
 - 💣 **Eliminar todos** — elimina todos los procesos en ejecución de los tipos habilitados, con confirmación y resumen.  
 - 🔄 **Actualización automática inteligente** — se actualiza cada 5 segundos, además de contar con una opción manual de **Actualizar**.  
